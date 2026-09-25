@@ -1,51 +1,97 @@
-$ReportDir  = "C:\CCDC"
-$ReportFile = "$ReportDir\ScheduledTasks_Report.txt"
 
-# Create report directory if missing
-if (-not (Test-Path $ReportDir)) {
-    New-Item -ItemType Directory -Path $ReportDir | Out-Null
-}
+<#
+.SYNOPSIS
+    Lists scheduled tasks outside selected default Microsoft paths.
+.DESCRIPTION
+    Assists with manual review of Windows scheduled tasks.
+    Non-default does not necessarily mean malicious.
+.EXAMPLE
+    .\ListNon-defaultScheduledTasks.ps1
+.EXAMPLE
+    .\ListNon-defaultScheduledTasks.ps1 -OutputDirectory "D:\Reports"
+#>
 
-# Clear previous report
-"" | Out-File -FilePath $ReportFile -Encoding UTF8
-
-# Paths that usually belong to Windows / Microsoft
-$DefaultPaths = @(
-    "\Microsoft\Windows",
-    "\Microsoft"
+param(
+    [string]$OutputDirectory = ".\Reports"
 )
 
-# Get all scheduled tasks
-$Tasks = Get-ScheduledTask | Sort-Object TaskPath, TaskName
+$ErrorActionPreference = "Stop"
 
-foreach ($t in $Tasks) {
+try {
+    $OutputDirectory = [System.IO.Path]::GetFullPath(
+        $OutputDirectory
+    )
 
-    $TaskName = $t.TaskName
-    $TaskPath = $t.TaskPath.Trim()
+    New-Item `
+        -ItemType Directory `
+        -Path $OutputDirectory `
+        -Force | Out-Null
 
-    # Skip default Microsoft tasks
-    $IsDefault = $false
-    foreach ($p in $DefaultPaths) {
-        if ($TaskPath.StartsWith($p)) {
-            $IsDefault = $true
-            break
+    $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+
+    $ReportFile = Join-Path `
+        $OutputDirectory `
+        "ScheduledTasks_$Timestamp.txt"
+
+    $DefaultPaths = @(
+        "\Microsoft\Windows\",
+        "\Microsoft\"
+    )
+
+    $Tasks = Get-ScheduledTask |
+        Sort-Object TaskPath, TaskName
+
+    $Results = @()
+
+    foreach ($Task in $Tasks) {
+        $TaskPath = $Task.TaskPath
+
+        $IsDefault = $false
+
+        foreach ($Path in $DefaultPaths) {
+            if ($TaskPath.StartsWith(
+                $Path,
+                [System.StringComparison]::OrdinalIgnoreCase
+            )) {
+                $IsDefault = $true
+                break
+            }
+        }
+
+        if ($IsDefault) {
+            continue
+        }
+
+        $Actions = @(
+            foreach ($Action in $Task.Actions) {
+                "$($Action.Execute) $($Action.Arguments)".Trim()
+            }
+        ) -join "; "
+
+        $Results += [PSCustomObject]@{
+            TaskName = $Task.TaskName
+            TaskPath = $Task.TaskPath
+            State    = $Task.State
+            Author   = $Task.Author
+            Actions  = $Actions
         }
     }
 
-    if ($IsDefault) { continue }
+    if ($Results.Count -gt 0) {
+        $Results |
+            Format-List * |
+            Out-File -FilePath $ReportFile -Encoding UTF8 -Width 300
+    }
+    else {
+        "No matching scheduled tasks found." |
+            Out-File -FilePath $ReportFile -Encoding UTF8
+    }
 
-    # Get task actions (what it runs)
-    $Actions = ($t.Actions | ForEach-Object {
-        $_.Execute + " " + $_.Arguments
-    }).Trim()
-
-    # Write task info to report
-    Add-Content $ReportFile "======================================="
-    Add-Content $ReportFile "Task Name : $TaskName"
-    Add-Content $ReportFile "Task Path : $TaskPath"
-    Add-Content $ReportFile "Author    : $($t.Author)"
-    Add-Content $ReportFile "Actions   : $Actions"
-    Add-Content $ReportFile ""
+    Write-Host "[OK] Scheduled task inspection completed." -ForegroundColor Green
+    Write-Host "[OK] Tasks found: $($Results.Count)"
+    Write-Host "[OK] Report: $ReportFile"
 }
-
-Write-Host "[OK] Scan completed. Report saved to $ReportFile" -ForegroundColor Green
+catch {
+    Write-Error "Scheduled task inspection failed: $_"
+    exit 1
+}
